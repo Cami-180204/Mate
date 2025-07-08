@@ -1,1 +1,406 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Graficador de Desigualdades + Simplex paso a paso</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.11.1/math.min.js"></script>
 
+<style>
+  body {
+    background: #f5f0db;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    font-family: 'Cambria Math', serif;
+  }
+  h1 { font-size: 24px; margin: 0; }
+  canvas {
+    background: #fff;
+    border: 1px solid #000;
+    border-radius: 8px;
+  }
+  .btn {
+    background: #4b5563;
+    color: #fff;
+    font-weight: 600;
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-family: 'Cambria Math', serif;
+  }
+  .mv {
+    width: 34px; height: 34px;
+    display: flex; align-items: center; justify-content: center;
+    background: #ff5783; color: #000;
+  }
+  #zin, #zout { background: #d7a1f9 }
+  #add       { background: #a2e4b8 }
+  #draw      { background: #75c6f7 }
+  #solve     { background: #fde047; color: #000 }
+  #stepbystep { background: #6366f1; color: #fff }
+  #result, #vertexEval, #summary, #analysis {
+    margin-top: 10px;
+    background: #e5e7eb;
+    padding: 6px 10px;
+    border-radius: 6px;
+    min-width: 260px;
+    max-width: 900px;
+    white-space: pre-wrap;
+    font-size: 16px;
+  }
+  #vertexEval { background: #dbeafe; }
+  #summary    { background: #e0f2f1; }
+  #analysis   { font-size: 14px; line-height: 1.35em; }
+
+  textarea, input, select {
+    font-family: 'Cambria Math', serif;
+    font-size: 14px;
+  }
+
+  /* Estilo para el paso a paso */
+  #stepWrap {
+    background: #f4f4f4;
+    margin-top: 30px;
+    padding: 20px;
+    border: 2px dashed #ccc;
+    border-radius: 10px;
+    display: none;
+    width: 95%;
+    max-width: 1000px;
+  }
+  textarea#stepCons {
+    height: 120px;
+    width: 100%;
+  }
+  table.simplex {
+    border-collapse: collapse;
+    width: 100%;
+    margin-top: 12px;
+  }
+  table.simplex th, table.simplex td {
+    border: 1px solid #000;
+    padding: 6px 12px;
+    text-align: center;
+  }
+  table.simplex th {
+    background: #fcd34d;
+  }
+</style>
+</head>
+<body>
+<h1>Graficador de Desigualdades & Método Simplex</h1>
+
+<!-- Campos de entrada -->
+<div id="inputWrap" style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;width:600px"></div>
+<button id="add" class="btn">+ añadir desigualdad</button>
+
+<!-- Función objetivo -->
+<div style="display:flex;gap:8px;align-items:center">
+  <label>Z =</label>
+  <input id="obj" style="padding:6px;border:1px solid #ccc;border-radius:4px;width:220px" placeholder="3*x+2*y">
+  <select id="sense" style="padding:6px;border:1px solid #ccc;border-radius:4px">
+    <option value="max">Maximizar</option>
+    <option value="min">Minimizar</option>
+  </select>
+</div>
+
+<!-- Botones principales -->
+<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+  <button id="draw"  class="btn">Graficar región</button>
+  <button id="solve" class="btn">Resolver Simplex</button>
+  <button id="stepbystep" class="btn">Simplex paso a paso</button>
+  <button id="zin"   class="btn">+</button>
+  <button id="zout"  class="btn">−</button>
+  <div style="display:flex;gap:6px">
+    <button class="btn mv" data-d="left">←</button>
+    <button class="btn mv" data-d="right">→</button>
+    <button class="btn mv" data-d="up">↑</button>
+    <button class="btn mv" data-d="down">↓</button>
+    <button class="btn mv" data-d="re">⌖</button>
+  </div>
+</div>
+
+<!-- Canvas y resultados -->
+<canvas id="cv" width="1000" height="700"></canvas>
+<div id="result">Introduce Z y haz clic en «Graficar región» o «Resolver Simplex».</div>
+<div id="vertexEval"></div>
+<div id="summary"></div>
+<div id="analysis"></div>
+
+<!-- Sección: Paso a paso -->
+<div id="stepWrap">
+  <h2>Método Simplex paso a paso (Gauss-Jordan)</h2>
+  <label>Coeficientes de Z (separados por espacios)</label>
+  <input id="stepObj" placeholder="3 5" />
+  <label>Sentido:
+    <select id="stepSense">
+      <option value="max">Maximizar</option>
+      <option value="min">Minimizar</option>
+    </select>
+  </label>
+  <label>Restricciones (una por línea, ej: <code>1 2 &lt;= 40</code>)</label>
+  <textarea id="stepCons"></textarea>
+  <button id="runStep" class="btn">Resolver paso a paso</button>
+  <div id="stepOut" style="margin-top:20px"></div>
+</div>
+  <script>
+/* ==================== UTILIDADES Y GLOBALES ==================== */
+const tpl = () =>
+  <input class="ineq" style="padding:6px;border-radius:4px;border:1px solid #ccc" placeholder="4*x+2*y<=100">;
+const wrap = document.getElementById('inputWrap');
+for (let i = 0; i < 3; i++) wrap.insertAdjacentHTML('beforeend', tpl());
+document.getElementById('add').onclick = () => wrap.insertAdjacentHTML('beforeend', tpl());
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let scale = 20, off = { x: cv.width / 2, y: cv.height / 2 };
+const palette = () => ["#EF4444", "#10B981", "#8B5CF6", "#3B82F6", "#fca5a5", "#14b8a6"];
+let pal = palette();
+
+/* ==================== COORDENADAS ==================== */
+const tp = (x, y) => ({ x: off.x + x * scale, y: off.y - y * scale });    // teoría → píxel
+const tc = (px, py) => ({ x: (px - off.x) / scale, y: (off.y - py) / scale }); // píxel → teoría
+
+/* ==================== PARSE DESIGUALDADES ==================== */
+function parse(str) {
+  str = str.replace(/\s+/g, '');
+  const ops = ['<=', '>=', '<', '>', '='];
+  const op = ops.find(o => str.includes(o));
+  if (!op) throw 'Falta operador (<=, >=, <, >, =)';
+  const [L, R] = str.split(op);
+  const exp = math.parse(${L} - (${R}));
+  const f = Function('x', 'y', return ${exp.toString()});
+  const c = f(0, 0), a = f(1, 0) - c, b = f(0, 1) - c;
+  const test = (x, y) => {
+    const v = f(x, y);
+    switch (op) {
+      case '<=': return v <= 1e-9;
+      case '<': return v < 0;
+      case '>=': return v >= -1e-9;
+      case '>': return v > 0;
+      default: return Math.abs(v) < 1e-9;
+    }
+  };
+  return { raw: str, op, a, b, c, color: pal.shift() || '#000', test };
+}
+
+/* ==================== GRAFICAR ==================== */
+function drawGrid() {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = '#e5e7eb';
+  for (let x = off.x % scale; x < cv.width; x += scale) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, cv.height); ctx.stroke();
+  }
+  for (let y = off.y % scale; y < cv.height; y += scale) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cv.width, y); ctx.stroke();
+  }
+  ctx.strokeStyle = '#000';
+  ctx.beginPath();
+  ctx.moveTo(0, off.y); ctx.lineTo(cv.width, off.y);
+  ctx.moveTo(off.x, 0); ctx.lineTo(off.x, cv.height);
+  ctx.stroke();
+}
+
+function shadeRegion(arr) {
+  const img = ctx.getImageData(0, 0, cv.width, cv.height);
+  const d = img.data, step = 6;
+  for (let px = 0; px < cv.width; px += step) {
+    for (let py = 0; py < cv.height; py += step) {
+      const { x, y } = tc(px, py);
+      if (arr.every(o => o.test(x, y))) {
+        for (let dx = 0; dx < step; dx++)
+          for (let dy = 0; dy < step; dy++) {
+            const id = ((py + dy) * cv.width + px + dx) * 4;
+            d[id] = 255; d[id + 1] = 255; d[id + 2] = 180; d[id + 3] = 70;
+          }
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function drawBorders(arr) {
+  arr.forEach(o => {
+    ctx.strokeStyle = o.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    if (Math.abs(o.b) < 1e-9) {
+      const x0 = (-o.c) / o.a, px = tp(x0, 0).x;
+      ctx.moveTo(px, 0); ctx.lineTo(px, cv.height);
+    } else if (Math.abs(o.a) < 1e-9) {
+      const y0 = (-o.c) / o.b, py = tp(0, y0).y;
+      ctx.moveTo(0, py); ctx.lineTo(cv.width, py);
+    } else {
+      let first = true;
+      for (let px = 0; px < cv.width; px++) {
+        const x = tc(px, 0).x;
+        const y = (-o.a * x - o.c) / o.b;
+        const py = tp(0, y).y;
+        if (py < 0 || py > cv.height) continue;
+        if (first) { ctx.moveTo(px, py); first = false; } else ctx.lineTo(px, py);
+      }
+    }
+    ctx.stroke();
+  });
+}
+
+function getVertices(arr) {
+  const pts = [];
+  for (let i = 0; i < arr.length; i++)
+    for (let j = i + 1; j < arr.length; j++) {
+      const d = arr[i].a * arr[j].b - arr[j].a * arr[i].b;
+      if (Math.abs(d) < 1e-9) continue;
+      const x = (arr[i].b * arr[j].c - arr[j].b * arr[i].c) / d;
+      const y = (arr[i].c * arr[j].a - arr[j].c * arr[i].a) / d;
+      if (arr.every(o => o.test(x, y)))
+        pts.push({ x: +x.toFixed(4), y: +y.toFixed(4) });
+    }
+  return pts;
+}
+
+function drawVertices(pts) {
+  pts.forEach(p => {
+    const pix = tp(p.x, p.y);
+    ctx.beginPath();
+    ctx.arc(pix.x, pix.y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = '#ff7e79';
+    ctx.fill();
+    ctx.strokeStyle = '#000';
+    ctx.stroke();
+    ctx.font = '12px Arial';
+    ctx.fillStyle = '#000';
+    ctx.fillText((${p.x},${p.y}), pix.x + 6, pix.y - 6);
+  });
+}
+    /* ==================== EVALUAR OBJETIVO ==================== */
+function evaluateObjective(pts) {
+  const objStr = document.getElementById('obj').value.trim();
+  if (!objStr) return null;
+  let f;
+  try { f = Function('x', 'y', return ${math.parse(objStr)}); } catch { return null; }
+  const sense = document.getElementById('sense').value;
+  let best = pts[0], bestVal = f(best.x, best.y);
+  pts.forEach(p => {
+    const v = f(p.x, p.y);
+    if ((sense === 'max' && v > bestVal) || (sense === 'min' && v < bestVal)) {
+      best = p;
+      bestVal = v;
+    }
+  });
+  return { best, bestVal: +bestVal.toFixed(4), fStr: objStr, sense, f };
+}
+
+/* ==================== TEXTO RESULTADOS ==================== */
+function textoVertices(pts, info) {
+  if (!info || !pts.length) return 'Región factible graficada. Añade Z para evaluar.';
+  let t = 'Evaluación directa por vértices:\n';
+  pts.forEach(p => {
+    t += Z(${p.x.toFixed(2)}, ${p.y.toFixed(2)}) = ${info.f(p.x, p.y).toFixed(2)}\n;
+  });
+  return t.trim();
+}
+
+function resumenFinal(best, info, restricciones) {
+  if (!best || !info) return '';
+  const rest = restricciones.map((r, i) => R${i + 1}: ${r.raw}).join(', ');
+  return La solución óptima del problema de programación lineal consiste en producir ${best.x.toFixed(2)} unidades de X y ${best.y.toFixed(2)} unidades de Y para ${info.sense === 'max' ? 'maximizar' : 'minimizar'} la función Z = ${info.fStr}. El valor óptimo es Z = ${info.bestVal.toFixed(2)}. Esta solución cumple con las restricciones: ${rest}.;
+}
+
+/* ==================== BOTÓN “GRAFICAR REGIÓN” ==================== */
+function plot() {
+  try {
+    pal = palette();
+    const parsed = [...document.querySelectorAll('.ineq')]
+      .map(e => e.value.trim()).filter(Boolean).map(parse);
+    drawGrid();
+    shadeRegion(parsed);
+    drawBorders(parsed);
+    const verts = getVertices(parsed);
+    drawVertices(verts);
+
+    const info = evaluateObjective(verts);
+    if (info) {
+      const pix = tp(info.best.x, info.best.y);
+      ctx.beginPath(); ctx.arc(pix.x, pix.y, 7, 0, Math.PI * 2);
+      ctx.strokeStyle = '#dc2626'; ctx.lineWidth = 3; ctx.stroke();
+
+      document.getElementById('result').textContent =
+        ${info.sense === 'max' ? 'Máximo' : 'Mínimo'} Z = ${info.bestVal} en (${info.best.x}, ${info.best.y});
+      document.getElementById('vertexEval').textContent = textoVertices(verts, info);
+      document.getElementById('summary').textContent = resumenFinal(info.best, info, parsed);
+    } else {
+      document.getElementById('result').textContent = 'Introduce Z y vuelve a graficar.';
+      document.getElementById('vertexEval').textContent = '';
+      document.getElementById('summary').textContent = '';
+    }
+    document.getElementById('analysis').textContent = '';
+  } catch (e) { alert(e); }
+}
+    /* ==================== EVALUAR OBJETIVO ==================== */
+function evaluateObjective(pts) {
+  const objStr = document.getElementById('obj').value.trim();
+  if (!objStr) return null;
+  let f;
+  try { f = Function('x', 'y', return ${math.parse(objStr)}); } catch { return null; }
+  const sense = document.getElementById('sense').value;
+  let best = pts[0], bestVal = f(best.x, best.y);
+  pts.forEach(p => {
+    const v = f(p.x, p.y);
+    if ((sense === 'max' && v > bestVal) || (sense === 'min' && v < bestVal)) {
+      best = p;
+      bestVal = v;
+    }
+  });
+  return { best, bestVal: +bestVal.toFixed(4), fStr: objStr, sense, f };
+}
+
+/* ==================== TEXTO RESULTADOS ==================== */
+function textoVertices(pts, info) {
+  if (!info || !pts.length) return 'Región factible graficada. Añade Z para evaluar.';
+  let t = 'Evaluación directa por vértices:\n';
+  pts.forEach(p => {
+    t += Z(${p.x.toFixed(2)}, ${p.y.toFixed(2)}) = ${info.f(p.x, p.y).toFixed(2)}\n;
+  });
+  return t.trim();
+}
+
+function resumenFinal(best, info, restricciones) {
+  if (!best || !info) return '';
+  const rest = restricciones.map((r, i) => R${i + 1}: ${r.raw}).join(', ');
+  return La solución óptima del problema de programación lineal consiste en producir ${best.x.toFixed(2)} unidades de X y ${best.y.toFixed(2)} unidades de Y para ${info.sense === 'max' ? 'maximizar' : 'minimizar'} la función Z = ${info.fStr}. El valor óptimo es Z = ${info.bestVal.toFixed(2)}. Esta solución cumple con las restricciones: ${rest}.;
+}
+
+/* ==================== BOTÓN “GRAFICAR REGIÓN” ==================== */
+function plot() {
+  try {
+    pal = palette();
+    const parsed = [...document.querySelectorAll('.ineq')]
+      .map(e => e.value.trim()).filter(Boolean).map(parse);
+    drawGrid();
+    shadeRegion(parsed);
+    drawBorders(parsed);
+    const verts = getVertices(parsed);
+    drawVertices(verts);
+
+    const info = evaluateObjective(verts);
+    if (info) {
+      const pix = tp(info.best.x, info.best.y);
+      ctx.beginPath(); ctx.arc(pix.x, pix.y, 7, 0, Math.PI * 2);
+      ctx.strokeStyle = '#dc2626'; ctx.lineWidth = 3; ctx.stroke();
+
+      document.getElementById('result').textContent =
+        ${info.sense === 'max' ? 'Máximo' : 'Mínimo'} Z = ${info.bestVal} en (${info.best.x}, ${info.best.y});
+      document.getElementById('vertexEval').textContent = textoVertices(verts, info);
+      document.getElementById('summary').textContent = resumenFinal(info.best, info, parsed);
+    } else {
+      document.getElementById('result').textContent = 'Introduce Z y vuelve a graficar.';
+      document.getElementById('vertexEval').textContent = '';
+      document.getElementById('summary').textContent = '';
+    }
+    document.getElementById('analysis').textContent = '';
+  } catch (e) { alert(e); }
+}
+    
